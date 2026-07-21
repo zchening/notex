@@ -1,8 +1,14 @@
+{
+    servers {
+        protocols h1 h2
+    }
+}
+
 note.xuyinji.com.cn {
     reverse_proxy 127.0.0.1:8080
     encode gzip
     header {
-        Content-Security-Policy "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' https://res.cloudinary.com data:; connect-src 'self' https://api.cloudinary.com; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+        Content-Security-Policy "default-src 'self'; script-src 'unsafe-inline' cdn.jsdelivr.net; style-src 'unsafe-inline'; img-src 'self' https://res.cloudinary.com data:; connect-src 'self' https://api.cloudinary.com; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
         X-Content-Type-Options "nosniff"
         Referrer-Policy "no-referrer"
     }

@@ -78,6 +78,19 @@ setInterval(() => {
   }
 }, 5 * 60 * 1000).unref();
 
+// --- SSE 推送 ---
+// Map<noteId, Set<res>> 存所有 SSE 连接
+const sseClients = new Map();
+
+function sseBroadcast(noteId, data) {
+  const clients = sseClients.get(noteId);
+  if (!clients) return;
+  const msg = 'data: ' + JSON.stringify(data) + '\n\n';
+  for (const res of clients) {
+    try { res.write(msg); } catch (e) {}
+  }
+}
+
 function notePath(id) {
   return path.join(NOTES_DIR, id + '.json');
 }
@@ -111,6 +124,26 @@ const server = http.createServer((req, res) => {
   const url = req.url.split('?')[0];
   const ip = getClientIP(req);
 
+  // --- API: SSE 流 ---
+  if (req.method === 'GET' && url.startsWith('/api/note/') && url.endsWith('/stream')) {
+    const id = url.replace(/\/stream$/, '').replace(/^\/api\/note\//, '');
+    if (!id || !ID_RE.test(id)) return sendJSON(res, 400, { error: 'bad id' });
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache, no-store, must-revalidate',
+      'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no'
+    });
+    res.write(': connected\n\n');
+    if (!sseClients.has(id)) sseClients.set(id, new Set());
+    sseClients.get(id).add(res);
+    req.on('close', () => {
+      const clients = sseClients.get(id);
+      if (clients) { clients.delete(res); if (clients.size === 0) sseClients.delete(id); }
+    });
+    return;
+  }
+
   // --- API: 读取笔记 ---
   if (req.method === 'GET' && url.startsWith('/api/note/')) {
     const id = extractId(url, '/api/note');
@@ -137,6 +170,7 @@ const server = http.createServer((req, res) => {
       const cur = readNote(id);
       const next = { v: (cur.v || 0) + 1, ct: obj.ct, iv: obj.iv, salt: obj.salt, updatedAt: Date.now() };
       writeNote(id, next);
+      sseBroadcast(id, { v: next.v, updatedAt: next.updatedAt });
       return sendJSON(res, 200, { ok: true, v: next.v, updatedAt: next.updatedAt });
     });
     return;

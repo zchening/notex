@@ -131,6 +131,15 @@ flowchart TD
 
 右上角 🌙/☀️ 按钮切换深色/浅色模式。首次访问自动跟随系统偏好，之后记住你的选择。
 
+### 复制与导出
+
+- **⧉ 复制到剪贴板**：复制全部内容（文字+图片），粘贴到微信/Word/飞书/Notion 时图文保留，粘贴到纯文本框时只显示文字
+- **📥 导出为图片**：将编辑区渲染为 PNG 图片并复制到剪贴板，可直接 Ctrl+V 粘贴到聊天窗口
+
+### 实时同步
+
+编辑后自动保存，其他设备通过 SSE（Server-Sent Events）亚秒级收到更新。如果正在编辑时有新版本到达，会显示提示条而不是直接覆盖。
+
 ---
 
 ---
@@ -148,9 +157,11 @@ flowchart TD
 | 密钥派生 | PBKDF2 | 20 万次迭代，SHA-256 |
 | 图片存储 | Cloudinary | 浏览器直传，Unsigned Upload Preset |
 | 图片压缩 | Canvas API | 上传前压缩至 1920px，JPEG 85% |
+| 实时同步 | SSE (Server-Sent Events) | 服务端推送更新通知，亚秒级同步 |
+| 截图导出 | html2canvas | 编辑区渲染为 PNG，2x 分辨率 |
 | 后端 | Node.js | 零依赖，单文件 `server.js` |
 | 存储 | JSON 文件 | 每笔记独立 `data/notes/{id}.json` |
-| 反代 | Caddy | 自动 HTTPS（Let's Encrypt），HTTP/3 |
+| 反代 | Caddy | 自动 HTTPS（Let's Encrypt），HTTP/2 |
 | 进程管理 | nssm | Windows 服务，开机自启 |
 
 ```mermaid
@@ -265,6 +276,7 @@ bash install.sh
 
 ## 更新历史
 
+- **v3.0**：SSE 实时推送（替代 4 秒轮询）、复制到剪贴板 + 导出为图片、冲突保护（编辑时不覆盖）、上传图标改 📤、关闭 HTTP/3 强制 HTTP/2、nginx CSP 修复、install.sh 域名参数化
 - **v2.3**：修复桌面端点击超链接进入编辑模式的问题（改用 mousedown 拦截）；index.html 禁止缓存确保始终加载最新版本
 - **v2.2**：点击超链接直接在新标签页打开（不进入编辑模式）
 - **v2.1**：粘贴 URL 自动转为可点击链接

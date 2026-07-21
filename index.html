@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <title>便签 · note.xuyinji.com.cn</title>
+<script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
 <style>
   :root{ --bg:#fafafa; --fg:#1a1a1a; --muted:#888; --line:#e6e6e6; --accent:#2b6cff; --box-bg:#fff; --upload-bg:#1a1a1a; }
   body.dark{ --bg:#1a1a2e; --fg:#e0e0e0; --muted:#888; --line:#333344; --accent:#5b8def; --box-bg:#252540; --upload-bg:#e0e0e0; }
@@ -42,6 +43,8 @@
   .upload-status{position:fixed;bottom:50px;left:50%;transform:translateX(-50%);background:var(--upload-bg);color:var(--bg);padding:8px 16px;border-radius:20px;font-size:13px;z-index:20;opacity:0;transition:opacity .3s;pointer-events:none}
   .upload-status.show{opacity:1}
   #loading{position:fixed;inset:0;background:var(--bg);display:flex;align-items:center;justify-content:center;z-index:5;color:var(--muted);font-size:14px}
+  #conflictBar{position:fixed;bottom:50px;left:50%;transform:translateX(-50%);background:var(--accent);color:#fff;padding:8px 16px;border-radius:8px;font-size:13px;z-index:20;display:none;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.2)}
+  #conflictBar.show{display:block}
 </style>
 </head>
 <body>
@@ -50,13 +53,16 @@
   <span id="statustext">连接中…</span>
   <span class="sp"></span>
   <button id="themeBtn" title="切换夜间模式">🌙</button>
-  <button id="uploadBtn" title="上传图片">📷</button>
+  <button id="uploadBtn" title="上传图片">📤</button>
+  <button id="copyBtn" title="复制到剪贴板">⧉</button>
+  <button id="exportImgBtn" title="导出为图片并复制">📥</button>
   <button id="lock">退出本机</button>
 </header>
 <div id="editor" data-ph="开始输入，自动同步到所有设备…" contenteditable="true"></div>
 <input type="file" id="fileInput" accept="image/*" style="display:none">
 <footer id="foot">端到端加密 · 仅在你的浏览器内加解密</footer>
 <div class="upload-status" id="uploadStatus"></div>
+<div id="conflictBar">📥 其他设备有更新，点击加载</div>
 
 <div id="loading">加载中…</div>
 
@@ -97,6 +103,7 @@ const statusEl = $('#status'), statusText = $('#statustext'), foot = $('#foot');
 const homeEl = $('#home'), loadingEl = $('#loading');
 const uploadBtn = $('#uploadBtn'), fileInput = $('#fileInput'), uploadStatus = $('#uploadStatus');
 const themeBtn = $('#themeBtn');
+const copyBtn = $('#copyBtn'), exportImgBtn = $('#exportImgBtn'), conflictBar = $('#conflictBar');
 
 // --- 夜间模式 ---
 function applyTheme(dark) {
@@ -277,6 +284,59 @@ fileInput.addEventListener('change', e => {
   e.target.value = '';
 });
 
+// --- 复制到剪贴板 ---
+copyBtn.addEventListener('click', async () => {
+  try {
+    const html = editor.innerHTML;
+    const text = editor.innerText;
+    const item = new ClipboardItem({
+      'text/html': new Blob([html], { type: 'text/html' }),
+      'text/plain': new Blob([text], { type: 'text/plain' })
+    });
+    await navigator.clipboard.write([item]);
+    showUploadStatus('✅ 已复制到剪贴板');
+  } catch (e) {
+    try {
+      await navigator.clipboard.writeText(editor.innerText);
+      showUploadStatus('✅ 已复制文字');
+    } catch (e2) {
+      showUploadStatus('❌ 复制失败');
+    }
+  }
+  setTimeout(hideUploadStatus, 2000);
+});
+
+// --- 导出为图片并复制 ---
+exportImgBtn.addEventListener('click', async () => {
+  if (typeof html2canvas === 'undefined') {
+    showUploadStatus('❌ 图片导出组件未加载');
+    setTimeout(hideUploadStatus, 2000);
+    return;
+  }
+  showUploadStatus('📥 正在生成图片…');
+  try {
+    const originalOverflow = editor.style.overflow;
+    editor.style.overflow = 'visible';
+    const canvas = await html2canvas(editor, {
+      backgroundColor: getComputedStyle(document.body).backgroundColor,
+      scale: 2,
+      useCORS: true,
+      logging: false,
+      width: editor.scrollWidth,
+      height: editor.scrollHeight,
+      windowWidth: editor.scrollWidth,
+      windowHeight: editor.scrollHeight
+    });
+    editor.style.overflow = originalOverflow;
+    const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+    await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+    showUploadStatus('✅ 图片已复制，可直接 Ctrl+V 粘贴');
+  } catch (e) {
+    showUploadStatus('❌ 导出失败：' + e.message);
+  }
+  setTimeout(hideUploadStatus, 3000);
+});
+
 // --- 解锁 ---
 async function unlock(pass) {
   err.textContent = '';
@@ -349,11 +409,15 @@ async function poll() {
     if ((note.v || 0) > localVer && note.ct) {
       const html = await decryptText(note.ct, note.iv, cryptoKey);
       if (html !== editor.innerHTML) {
-        lastHtml = html;
-        const sel = window.getSelection();
-        const wasFocused = document.activeElement === editor;
-        editor.innerHTML = html;
-        if (wasFocused) editor.focus();
+        // 冲突保护：编辑器有焦点时不覆盖，显示提示
+        if (document.activeElement === editor) {
+          pendingHtml = html;
+          pendingVer = note.v;
+          conflictBar.classList.add('show');
+        } else {
+          lastHtml = html;
+          editor.innerHTML = html;
+        }
       }
       localVer = note.v;
     }
@@ -362,7 +426,39 @@ async function poll() {
     else setStatus(false, '同步中断');
   }
 }
-function startSync() { setInterval(poll, 4000); poll(); }
+
+// SSE 推送 + 轮询兜底
+let pendingHtml = null, pendingVer = 0;
+let sseSource = null, pollTimer = null;
+
+function startSync() {
+  // SSE 连接
+  try {
+    sseSource = new EventSource('/api/note/' + encodeURIComponent(noteId) + '/stream');
+    sseSource.onmessage = e => { poll(); };
+    sseSource.onerror = () => {
+      if (sseSource) { sseSource.close(); sseSource = null; }
+      // 断线兜底：10 秒轮询
+      if (!pollTimer) { pollTimer = setInterval(poll, 10000); }
+    };
+    // SSE 正常时不轮询
+  } catch (e) {
+    pollTimer = setInterval(poll, 10000);
+  }
+  poll();
+}
+
+// 冲突提示：点击加载新版本
+conflictBar.addEventListener('click', () => {
+  if (pendingHtml !== null) {
+    lastHtml = pendingHtml;
+    editor.innerHTML = pendingHtml;
+    localVer = pendingVer;
+    pendingHtml = null;
+  }
+  conflictBar.classList.remove('show');
+  editor.focus();
+});
 
 $('#ok').addEventListener('click', () => unlock(pw.value));
 pw.addEventListener('keydown', e => { if (e.key === 'Enter') unlock(pw.value); });

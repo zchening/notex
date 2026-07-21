@@ -4,7 +4,11 @@
 # 用法：将 server.js、index.html、本脚本放同一目录，然后 bash install.sh
 set -euo pipefail
 
-DOMAIN="note.xuyinji.com.cn"
+DOMAIN="${NOTESYNC_DOMAIN:-}"
+if [ -z "$DOMAIN" ]; then
+  read -rp "请输入域名（如 note.example.com）: " DOMAIN
+  if [ -z "$DOMAIN" ]; then echo "!! 域名不能为空"; exit 1; fi
+fi
 APP_DIR="/opt/notesync"
 PORT=8080
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -44,53 +48,56 @@ cp "$SCRIPT_DIR/server.js" "$APP_DIR/server.js"
 cp "$SCRIPT_DIR/index.html" "$APP_DIR/index.html"
 
 echo "==> [3/6] 写入 nginx 配置"
-cat > /etc/nginx/conf.d/$DOMAIN.conf <<'NGINXEOF'
+cat > /etc/nginx/conf.d/$DOMAIN.conf <<NGINXEOF
 server {
     listen 80;
-    server_name note.xuyinji.com.cn;
+    server_name $DOMAIN;
     location /.well-known/acme-challenge/ { root /var/www/certbot; }
-    location / { return 301 https://$host$request_uri; }
+    location / { return 301 https://\$host\$request_uri; }
 }
 
 server {
     listen 443 ssl;
-    server_name note.xuyinji.com.cn;
+    server_name $DOMAIN;
 
-    ssl_certificate     /etc/letsencrypt/live/note.xuyinji.com.cn/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/note.xuyinji.com.cn/privkey.pem;
+    ssl_certificate     /etc/letsencrypt/live/$DOMAIN/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_session_cache shared:SSL:10m;
 
-    add_header Content-Security-Policy "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'" always;
+    add_header Content-Security-Policy "default-src 'self'; script-src 'unsafe-inline' cdn.jsdelivr.net; style-src 'unsafe-inline'; img-src 'self' https://res.cloudinary.com data:; connect-src 'self' https://api.cloudinary.com; object-src 'none'; base-uri 'none'; frame-ancestors 'none'" always;
     add_header X-Content-Type-Options "nosniff" always;
     add_header Referrer-Policy "no-referrer" always;
 
     client_max_body_size 256k;
 
     location / {
-        proxy_pass http://127.0.0.1:8080;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_pass http://127.0.0.1:$PORT;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 86400s;
     }
 }
 NGINXEOF
 
 echo "==> [4/6] 写入 systemd 服务并启动"
-cat > /etc/systemd/system/notesync.service <<'SRVEOF'
+cat > /etc/systemd/system/notesync.service <<SRVEOF
 [Unit]
 Description=NoteSync end-to-end encrypted notes
 After=network.target
 
 [Service]
 Type=simple
-WorkingDirectory=/opt/notesync
-ExecStart=/usr/bin/node /opt/notesync/server.js
+WorkingDirectory=$APP_DIR
+ExecStart=/usr/bin/node $APP_DIR/server.js
 Restart=on-failure
 RestartSec=3
 User=www-data
-Environment=PORT=8080
+Environment=PORT=$PORT
 
 [Install]
 WantedBy=multi-user.target
