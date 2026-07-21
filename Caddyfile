@@ -5,7 +5,12 @@
 }
 
 note.xuyinji.com.cn {
-    reverse_proxy 127.0.0.1:8080
+    reverse_proxy 127.0.0.1:8080 {
+        flush_interval -1
+        transport http {
+            read_timeout 86400s
+        }
+    }
     encode gzip
     header {
         Content-Security-Policy "default-src 'self'; script-src 'unsafe-inline' cdn.jsdelivr.net; style-src 'unsafe-inline'; img-src 'self' https://res.cloudinary.com data:; connect-src 'self' https://api.cloudinary.com; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"

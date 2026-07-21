@@ -137,7 +137,12 @@ const server = http.createServer((req, res) => {
     res.write(': connected\n\n');
     if (!sseClients.has(id)) sseClients.set(id, new Set());
     sseClients.get(id).add(res);
+    // SSE 心跳：每 15 秒发送 ping，防止代理/运营商中断长连接
+    const heartbeat = setInterval(() => {
+      try { res.write(': ping\n\n'); } catch (e) { clearInterval(heartbeat); }
+    }, 15000);
     req.on('close', () => {
+      clearInterval(heartbeat);
       const clients = sseClients.get(id);
       if (clients) { clients.delete(res); if (clients.size === 0) sseClients.delete(id); }
     });
