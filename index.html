@@ -261,6 +261,15 @@ editor.addEventListener('drop', e => {
   if (files && files.length > 0) handleImageUpload(files[0]);
 });
 
+// 点击链接在新标签页打开（不进入编辑）
+editor.addEventListener('click', e => {
+  const a = e.target.closest('a');
+  if (a) {
+    e.preventDefault();
+    window.open(a.href, '_blank', 'noopener,noreferrer');
+  }
+});
+
 // 文件选择上传
 uploadBtn.addEventListener('click', () => fileInput.click());
 fileInput.addEventListener('change', e => {
