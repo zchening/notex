@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>便签 · note.xuyinji.com.cn</title>
+<style>
+  :root{ --bg:#fafafa; --fg:#1a1a1a; --muted:#888; --line:#e6e6e6; --accent:#2b6cff; }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0}
+  body{background:var(--bg);color:var(--fg);font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;display:flex;flex-direction:column}
+  header{display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid var(--line);font-size:14px;color:var(--muted)}
+  header .dot{width:8px;height:8px;border-radius:50%;background:#bbb}
+  header .dot.on{background:#2ecc71}
+  header .sp{flex:1}
+  header button{font-size:13px;color:var(--muted);background:none;border:1px solid var(--line);border-radius:6px;padding:4px 10px;cursor:pointer}
+  header button:hover{color:var(--fg)}
+  textarea{flex:1;width:100%;border:0;outline:0;resize:none;padding:16px;background:transparent;color:var(--fg);font:inherit}
+  footer{padding:6px 16px;border-top:1px solid var(--line);font-size:12px;color:var(--muted);text-align:right}
+  .mask{position:fixed;inset:0;background:rgba(0,0,0,.35);display:flex;align-items:center;justify-content:center;z-index:10}
+  .box{background:#fff;border-radius:12px;padding:22px;width:min(92vw,360px);box-shadow:0 8px 30px rgba(0,0,0,.15)}
+  .box h1{font-size:17px;margin:0 0 6px}
+  .box p{font-size:13px;color:var(--muted);margin:0 0 14px;line-height:1.5}
+  .box input{width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:8px;font-size:15px;outline:0}
+  .box input:focus{border-color:var(--accent)}
+  .box .err{color:#e74c3c;font-size:13px;min-height:18px;margin:8px 0}
+  .box button{width:100%;padding:10px;border:0;border-radius:8px;background:var(--accent);color:#fff;font-size:15px;cursor:pointer}
+  .box button:active{opacity:.9}
+  .home{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:20px;text-align:center}
+  .home h1{font-size:20px;margin:0 0 10px}
+  .home p{color:var(--muted);font-size:14px;line-height:1.8;margin:0}
+  .home code{background:#eee;padding:2px 6px;border-radius:4px;font-size:13px}
+  .hidden{display:none!important}
+</style>
+</head>
+<body>
+<header>
+  <span class="dot" id="status"></span>
+  <span id="statustext">连接中…</span>
+  <span class="sp"></span>
+  <button id="lock">退出本机</button>
+</header>
+<textarea id="ta" placeholder="开始输入，自动同步到所有设备…" disabled></textarea>
+<footer id="foot">端到端加密 · 仅在你的浏览器内加解密</footer>
+
+<div class="home hidden" id="home">
+  <h1>NoteSync</h1>
+  <p>请在 URL 后加笔记名访问，例如：<br><code>note.xuyinji.com.cn/biji</code></p>
+</div>
+
+<div class="mask" id="mask">
+  <div class="box">
+    <h1>输入访问口令</h1>
+    <p>此口令用于在本机派生加密密钥，不会发送到服务器。每台新设备首次打开需输入一次，之后自动记住。</p>
+    <input id="pw" type="password" autocomplete="off" autofocus>
+    <div class="err" id="err"></div>
+    <button id="ok">解锁</button>
+  </div>
+</div>
+
+<script>
+'use strict';
+const noteId = location.pathname.split('?')[0].replace(/^\/+|\/+$/g, '');
+const NOTE_API = '/api/note/' + encodeURIComponent(noteId);
+const FAIL_API = '/api/fail/' + encodeURIComponent(noteId);
+const KEY_STORE = 'notesync_key_' + noteId;
+const PBKDF2_ITER = 200000;
+const FAIL_LIMIT = 10;
+
+const $ = s => document.querySelector(s);
+const ta = $('#ta'), mask = $('#mask'), pw = $('#pw'), err = $('#err');
+const statusEl = $('#status'), statusText = $('#statustext'), foot = $('#foot');
+const homeEl = $('#home');
+
+const bufToB64 = b => btoa(String.fromCharCode(...new Uint8Array(b)));
+const b64ToBuf = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+
+let cryptoKey = null, serverSalt = null, localVer = 0, busy = false, lastText = '';
+
+async function deriveKey(pass, saltBuf) {
+  const base = await crypto.subtle.importKey('raw', new TextEncoder().encode(pass), 'PBKDF2', false, ['deriveKey']);
+  return crypto.subtle.deriveKey(
+    { name: 'PBKDF2', salt: saltBuf, iterations: PBKDF2_ITER, hash: 'SHA-256' },
+    base, { name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']
+  );
+}
+async function encryptText(text, key) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(text));
+  return { ct: bufToB64(ct), iv: bufToB64(iv) };
+}
+async function decryptText(ctB64, ivB64, key) {
+  const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b64ToBuf(ivB64) }, key, b64ToBuf(ctB64));
+  return new TextDecoder().decode(pt);
+}
+
+function setStatus(on, text) { statusEl.className = 'dot' + (on ? ' on' : ''); statusText.textContent = text; }
+
+function fmtRetry(sec) {
+  const m = Math.ceil(sec / 60);
+  return m + ' 分钟';
+}
+
+async function apiGet() {
+  const r = await fetch(NOTE_API, { cache: 'no-store' });
+  if (r.status === 429) {
+    const j = await r.json();
+    throw { locked: true, retryAfter: j.retryAfter || 1800 };
+  }
+  if (!r.ok) throw new Error('GET ' + r.status);
+  return r.json();
+}
+async function apiPut(obj) {
+  const r = await fetch(NOTE_API, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(obj) });
+  if (r.status === 429) {
+    const j = await r.json();
+    throw { locked: true, retryAfter: j.retryAfter || 1800 };
+  }
+  if (!r.ok) throw new Error('PUT ' + r.status);
+  return r.json();
+}
+
+async function reportFail() {
+  try {
+    const r = await fetch(FAIL_API, { method: 'POST' });
+    const j = await r.json();
+    if (r.status === 429 || j.locked) {
+      err.textContent = '尝试过多，请 ' + fmtRetry(j.retryAfter || 1800) + ' 后再试';
+      return;
+    }
+    const left = FAIL_LIMIT - (j.count || 0);
+    if (left > 0 && left <= 3) {
+      err.textContent = '口令错误，解密失败（剩余 ' + left + ' 次尝试）';
+    } else {
+      err.textContent = '口令错误，解密失败';
+    }
+  } catch (e) {
+    err.textContent = '口令错误，解密失败';
+  }
+}
+
+async function unlock(pass) {
+  err.textContent = '';
+  if (!pass) { err.textContent = '请输入口令'; return; }
+  let note;
+  try { note = await apiGet(); }
+  catch (e) {
+    if (e.locked) { err.textContent = '尝试过多，请 ' + fmtRetry(e.retryAfter) + ' 后再试'; return; }
+    err.textContent = '无法连接服务器'; return;
+  }
+
+  serverSalt = note.salt ? b64ToBuf(note.salt) : crypto.getRandomValues(new Uint8Array(16));
+  let key;
+  try { key = await deriveKey(pass, serverSalt); } catch (e) { err.textContent = '派生密钥失败'; return; }
+
+  if (note.ct) {
+    try { await decryptText(note.ct, note.iv, key); }
+    catch (e) {
+      await reportFail();
+      return;
+    }
+  }
+
+  cryptoKey = key;
+  try {
+    const raw = await crypto.subtle.exportKey('raw', key);
+    localStorage.setItem(KEY_STORE, bufToB64(raw));
+  } catch (e) {}
+
+  if (!note.salt) {
+    try { await apiPut({ ct: '', iv: '', salt: bufToB64(serverSalt) }); } catch (e) {}
+  }
+  localVer = note.v || 0;
+  mask.classList.add('hidden');
+  ta.disabled = false; ta.focus();
+  if (note.ct) { try { lastText = await decryptText(note.ct, note.iv, key); ta.value = lastText; } catch (e) {} }
+  foot.textContent = '已解锁 · 端到端加密';
+  startSync();
+}
+
+async function loadStoredKey() {
+  const b64 = localStorage.getItem(KEY_STORE);
+  if (!b64) return false;
+  try {
+    const key = await crypto.subtle.importKey('raw', b64ToBuf(b64), { name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']);
+    cryptoKey = key; return true;
+  } catch (e) { localStorage.removeItem(KEY_STORE); return false; }
+}
+
+let saveTimer = null;
+ta.addEventListener('input', () => {
+  if (busy) return;
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(saveLocal, 800);
+});
+
+async function saveLocal() {
+  const text = ta.value;
+  if (text === lastText) return;
+  busy = true; setStatus(false, '保存中…');
+  try {
+    const { ct, iv } = await encryptText(text, cryptoKey);
+    const r = await apiPut({ ct, iv, salt: bufToB64(serverSalt) });
+    localVer = r.v; lastText = text;
+    setStatus(true, '已同步');
+  } catch (e) {
+    if (e.locked) { setStatus(false, '已锁定，请稍后'); ta.disabled = true; }
+    else { setStatus(false, '保存失败'); }
+  }
+  finally { busy = false; }
+}
+
+async function poll() {
+  if (busy) return;
+  try {
+    const note = await apiGet();
+    setStatus(true, '已同步');
+    if ((note.v || 0) > localVer && note.ct) {
+      const text = await decryptText(note.ct, note.iv, cryptoKey);
+      if (text !== ta.value) {
+        lastText = text;
+        const pos = ta.selectionStart;
+        ta.value = text;
+        ta.setSelectionRange(pos, pos);
+      }
+      localVer = note.v;
+    }
+  } catch (e) {
+    if (e.locked) { setStatus(false, '已锁定'); }
+    else { setStatus(false, '同步中断'); }
+  }
+}
+function startSync() { setInterval(poll, 4000); poll(); }
+
+$('#ok').addEventListener('click', () => unlock(pw.value));
+pw.addEventListener('keydown', e => { if (e.key === 'Enter') unlock(pw.value); });
+$('#lock').addEventListener('click', () => {
+  localStorage.removeItem(KEY_STORE); cryptoKey = null;
+  ta.value = ''; ta.disabled = true;
+  mask.classList.remove('hidden'); pw.value = ''; err.textContent = '';
+  foot.textContent = '端到端加密 · 仅在你的浏览器内加解密';
+  setStatus(false, '已退出');
+});
+
+(async function init() {
+  // 首页：noteId 为空，显示提示
+  if (!noteId) {
+    mask.classList.add('hidden');
+    ta.classList.add('hidden');
+    homeEl.classList.remove('hidden');
+    setStatus(true, 'NoteSync');
+    return;
+  }
+  if (await loadStoredKey()) {
+    let note;
+    try { note = await apiGet(); }
+    catch (e) {
+      if (e.locked) {
+        setStatus(false, '已锁定');
+        mask.classList.remove('hidden');
+        err.textContent = '尝试过多，请 ' + fmtRetry(e.retryAfter) + ' 后再试';
+        return;
+      }
+      setStatus(false, '无法连接'); return;
+    }
+    serverSalt = note.salt ? b64ToBuf(note.salt) : null;
+    if (!serverSalt) { mask.classList.remove('hidden'); pw.focus(); return; }
+    localVer = note.v || 0;
+    mask.classList.add('hidden'); ta.disabled = false; ta.focus();
+    if (note.ct) { try { lastText = await decryptText(note.ct, note.iv, cryptoKey); ta.value = lastText; } catch (e) {} }
+    foot.textContent = '已解锁 · 端到端加密';
+    startSync();
+  } else {
+    mask.classList.remove('hidden'); pw.focus();
+  }
+})();
+</script>
+</body>
+</html>

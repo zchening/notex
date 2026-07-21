@@ -1,0 +1,15 @@
+[Unit]
+Description=NoteSync end-to-end encrypted notes
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/notesync
+ExecStart=/usr/bin/node /opt/notesync/server.js
+Restart=on-failure
+RestartSec=3
+User=www-data
+Environment=PORT=8080
+
+[Install]
+WantedBy=multi-user.target
